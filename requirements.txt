@@ -3,6 +3,3 @@ pymupdf
 pytesseract
 Pillow
 scikit-learn
-pandas
-matplotlit
-seaborn
