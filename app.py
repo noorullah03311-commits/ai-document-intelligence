@@ -1,14 +1,18 @@
 import streamlit as st
-import fitz
+import pymupdf
 import pytesseract
-from PIL import Image
-import io
 import re
+import io
+import os
+
+from PIL import Image, ImageOps
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.naive_bayes import MultinomialNB
 
 
-# =========================================================
-# PAGE CONFIGURATION
-# =========================================================
+# ==============================
+# PAGE SETTINGS
+# ==============================
 
 st.set_page_config(
     page_title="AI Document Intelligence",
@@ -16,30 +20,136 @@ st.set_page_config(
     layout="wide"
 )
 
-
-# =========================================================
-# TITLE
-# =========================================================
-
 st.title("📄 AI Document Intelligence")
 st.write("Upload a PDF or image to analyze the document.")
 
 
-# =========================================================
-# FILE UPLOAD
-# =========================================================
+# ==============================
+# TEXT CLEANING
+# ==============================
 
-uploaded_file = st.file_uploader(
-    "Choose a document",
-    type=["pdf", "jpg", "jpeg", "png"]
-)
+def clean_text(text):
+    text = text.replace("\x00", " ")
+
+    # Fix words split across lines
+    text = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", text)
+
+    # Remove extra spaces
+    text = re.sub(r"[ \t]+", " ", text)
+
+    # Remove repeated blank lines
+    text = re.sub(r"\n\s*\n+", "\n", text)
+
+    # Clean each line
+    lines = []
+
+    for line in text.splitlines():
+        line = line.strip()
+
+        if line:
+            lines.append(line)
+
+    return "\n".join(lines).strip()
 
 
-# =========================================================
-# DOCUMENT CLASSIFICATION
-# =========================================================
+# ==============================
+# OCR PREPROCESSING
+# ==============================
 
-def classify_document(text):
+def preprocess_image(image):
+
+    # Grayscale
+    image = image.convert("L")
+
+    # Increase size for better OCR
+    width, height = image.size
+
+    if width < 1600:
+        scale = 1600 / width
+        image = image.resize(
+            (int(width * scale), int(height * scale))
+        )
+
+    # Improve contrast
+    image = ImageOps.autocontrast(image)
+
+    # Threshold
+    image = image.point(
+        lambda pixel: 0 if pixel < 180 else 255
+    )
+
+    return image
+
+
+def run_ocr(image):
+
+    processed_image = preprocess_image(image)
+
+    text = pytesseract.image_to_string(
+        processed_image,
+        config="--psm 6"
+    )
+
+    return clean_text(text)
+
+
+# ==============================
+# PDF TEXT EXTRACTION
+# ==============================
+
+def extract_pdf_text(pdf_bytes):
+
+    extracted_text = ""
+
+    document = pymupdf.open(
+        stream=pdf_bytes,
+        filetype="pdf"
+    )
+
+    for page in document:
+        extracted_text += page.get_text() + "\n"
+
+    document.close()
+
+    extracted_text = clean_text(extracted_text)
+
+    # OCR if text is missing or too short
+    if len(extracted_text) < 30:
+
+        extracted_text = ""
+
+        document = pymupdf.open(
+            stream=pdf_bytes,
+            filetype="pdf"
+        )
+
+        for page in document:
+
+            pix = page.get_pixmap(
+                matrix=pymupdf.Matrix(2, 2),
+                alpha=False
+            )
+
+            image = Image.open(
+                io.BytesIO(
+                    pix.tobytes("png")
+                )
+            )
+
+            extracted_text += run_ocr(image) + "\n"
+
+        document.close()
+
+        extracted_text = clean_text(extracted_text)
+
+    return extracted_text
+
+
+# ==============================
+# RULE-BASED CLASSIFICATION
+# ==============================
+
+def rule_based_classification(text):
 
     text_lower = text.lower()
 
@@ -49,7 +159,8 @@ def classify_document(text):
         "bill to",
         "total amount",
         "subtotal",
-        "tax"
+        "tax",
+        "grand total"
     ]
 
     resume_keywords = [
@@ -77,93 +188,203 @@ def classify_document(text):
     elif resume_score > invoice_score and resume_score >= 2:
         return "Resume"
 
-    else:
-        return "Other"
+    return "Other"
 
 
-# =========================================================
-# INVOICE FIELD EXTRACTION
-# =========================================================
+# ==============================
+# TRAIN ML MODEL
+# ==============================
+
+@st.cache_resource
+def train_ml_model():
+
+    dataset_path = "dataset/week3_dataset"
+
+    categories = [
+        "Invoice",
+        "Other",
+        "Resume"
+    ]
+
+    texts = []
+    labels = []
+
+    if not os.path.exists(dataset_path):
+        return None, None
+
+    for category in categories:
+
+        folder = os.path.join(
+            dataset_path,
+            category
+        )
+
+        if not os.path.exists(folder):
+            continue
+
+        for filename in os.listdir(folder):
+
+            if not filename.lower().endswith(".pdf"):
+                continue
+
+            filepath = os.path.join(
+                folder,
+                filename
+            )
+
+            try:
+
+                with open(filepath, "rb") as file:
+                    pdf_bytes = file.read()
+
+                text = extract_pdf_text(pdf_bytes)
+
+                if len(text) > 20:
+
+                    texts.append(text)
+                    labels.append(category)
+
+            except Exception:
+                pass
+
+    if len(texts) < 6:
+        return None, None
+
+    vectorizer = TfidfVectorizer(
+        max_features=3000,
+        ngram_range=(1, 2)
+    )
+
+    X = vectorizer.fit_transform(texts)
+
+    model = MultinomialNB()
+
+    model.fit(
+        X,
+        labels
+    )
+
+    return model, vectorizer
+
+
+# ==============================
+# INVOICE EXTRACTION
+# ==============================
 
 def extract_invoice_fields(text):
 
     fields = {}
 
+    # Invoice Number
     invoice_number = re.search(
-        r"Invoice Number\s*[:\-]?\s*([A-Za-z0-9\-]+)",
+        r"(?:invoice\s*(?:number|no\.?|#)|inv(?:oice)?\s*#?)"
+        r"\s*[:\-]?\s*([A-Za-z0-9\-]+)",
         text,
         re.IGNORECASE
     )
 
+    fields["Invoice Number"] = (
+        invoice_number.group(1).strip()
+        if invoice_number
+        else "Not Found"
+    )
+
+    # Date
     date = re.search(
-        r"Date\s*[:\-]?\s*(\d{2}-\d{2}-\d{4})",
+        r"\b(?:date|invoice date)\s*[:\-]?\s*"
+        r"(\d{1,4}[-/]\d{1,2}[-/]\d{1,4})",
         text,
         re.IGNORECASE
     )
 
+    fields["Date"] = (
+        date.group(1).strip()
+        if date
+        else "Not Found"
+    )
+
+    # Company Name
     company = re.search(
-        r"Company Name\s*[:\-]?\s*(.+)",
+        r"company\s*name\s*[:\-]?\s*(.+)",
         text,
         re.IGNORECASE
     )
 
-    payment_due = re.search(
-        r"Payment Due\s*[:\-]?\s*(\d{2}-\d{2}-\d{4})",
+    if company:
+        fields["Company Name"] = company.group(1).strip()
+
+    else:
+        lines = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip()
+        ]
+
+        company_name = "Not Found"
+
+        for line in lines[:5]:
+
+            lower_line = line.lower()
+
+            if (
+                "invoice" not in lower_line
+                and "date" not in lower_line
+                and "email" not in lower_line
+                and "phone" not in lower_line
+            ):
+                company_name = line
+                break
+
+        fields["Company Name"] = company_name
+
+    # Total Amount
+    total = re.search(
+        r"(?:total\s*amount|grand\s*total|total)"
+        r"\s*[:\-]?\s*([^\n]+)",
         text,
         re.IGNORECASE
     )
 
+    fields["Total Amount"] = (
+        total.group(1).strip()
+        if total
+        else "Not Found"
+    )
+
+    # Email
     email = re.search(
         r"[\w\.-]+@[\w\.-]+\.\w+",
         text
     )
 
+    fields["Email"] = (
+        email.group(0).strip()
+        if email
+        else "Not Found"
+    )
+
+    # Phone
     phone = re.search(
         r"\+?\d[\d\s\-]{8,}\d",
         text
     )
 
-    total = re.search(
-        r"Total Amount\s*[:\-]?\s*(.+)",
-        text,
-        re.IGNORECASE
+    fields["Phone"] = (
+        phone.group(0).strip()
+        if phone
+        else "Not Found"
     )
-
-    if invoice_number:
-        fields["Invoice Number"] = invoice_number.group(1).strip()
-
-    if date:
-        fields["Date"] = date.group(1).strip()
-
-    if company:
-        fields["Company Name"] = company.group(1).strip()
-
-    if payment_due:
-        fields["Payment Due"] = payment_due.group(1).strip()
-
-    if email:
-        fields["Email"] = email.group(0).strip()
-
-    if phone:
-        fields["Phone"] = phone.group(0).strip()
-
-    if total:
-        fields["Total Amount"] = total.group(1).strip()
 
     return fields
 
 
-# =========================================================
-# RESUME FIELD EXTRACTION
-# =========================================================
+# ==============================
+# RESUME EXTRACTION
+# ==============================
 
 def extract_resume_fields(text):
 
     fields = {}
-
-    # -------------------------
-    # Name
-    # -------------------------
 
     lines = [
         line.strip()
@@ -171,80 +392,59 @@ def extract_resume_fields(text):
         if line.strip()
     ]
 
+    # Name
     name = None
 
     for i, line in enumerate(lines):
 
-        if line.upper() == "RESUME" and i + 1 < len(lines):
-            name = lines[i + 1]
+        if line.upper() in [
+            "RESUME",
+            "CURRICULUM VITAE",
+            "CV"
+        ]:
+
+            if i + 1 < len(lines):
+                name = lines[i + 1]
+
             break
 
-    if name:
-        fields["Name"] = name
+    if not name and lines:
+        name = lines[0]
 
+    fields["Name"] = (
+        name
+        if name
+        else "Not Found"
+    )
 
-    # -------------------------
     # Email
-    # -------------------------
-
     email = re.search(
         r"[\w\.-]+@[\w\.-]+\.\w+",
         text
     )
 
-    if email:
-        fields["Email"] = email.group(0).strip()
+    fields["Email"] = (
+        email.group(0).strip()
+        if email
+        else "Not Found"
+    )
 
-
-    # -------------------------
     # Phone
-    # -------------------------
-
     phone = re.search(
         r"\+?\d[\d\s\-]{8,}\d",
         text
     )
 
-    if phone:
-        fields["Phone"] = phone.group(0).strip()
-
-
-    # -------------------------
-    # Education
-    # -------------------------
-
-    education = re.search(
-        r"EDUCATION\s*(.*?)(?=EXPERIENCE|SKILLS|PROJECTS|$)",
-        text,
-        re.IGNORECASE | re.DOTALL
+    fields["Phone"] = (
+        phone.group(0).strip()
+        if phone
+        else "Not Found"
     )
 
-    if education:
-        education_text = education.group(1).strip()
-        fields["Education"] = education_text
-
-
-    # -------------------------
-    # Experience
-    # -------------------------
-
-    experience = re.search(
-        r"EXPERIENCE\s*(.*?)(?=SKILLS|PROJECTS|EDUCATION|$)",
-        text,
-        re.IGNORECASE | re.DOTALL
-    )
-
-    if experience:
-        experience_text = experience.group(1).strip()
-        fields["Experience"] = experience_text
-
-
-    # -------------------------
     # Skills
-    # -------------------------
-
     skills = re.search(
-        r"SKILLS\s*(.*?)(?=PROJECTS|EXPERIENCE|EDUCATION|$)",
+        r"SKILLS\s*(.*?)(?="
+        r"PROJECTS|EXPERIENCE|EDUCATION|$)",
         text,
         re.IGNORECASE | re.DOTALL
     )
@@ -253,7 +453,6 @@ def extract_resume_fields(text):
 
         skills_text = skills.group(1).strip()
 
-        # Convert multiple lines into one readable line
         skill_lines = [
             line.strip()
             for line in skills_text.splitlines()
@@ -262,24 +461,36 @@ def extract_resume_fields(text):
 
         fields["Skills"] = ", ".join(skill_lines)
 
+    else:
+        fields["Skills"] = "Not Found"
 
     return fields
 
 
-# =========================================================
-# PROCESS UPLOADED DOCUMENT
-# =========================================================
+# ==============================
+# UPLOAD
+# ==============================
+
+uploaded_file = st.file_uploader(
+    "Choose a document",
+    type=[
+        "pdf",
+        "jpg",
+        "jpeg",
+        "png"
+    ]
+)
+
+
+# ==============================
+# PROCESS DOCUMENT
+# ==============================
 
 if uploaded_file is not None:
 
     st.success(
         f"File uploaded: {uploaded_file.name}"
     )
-
-
-    # =====================================================
-    # FILE INFORMATION
-    # =====================================================
 
     st.write("### File Information")
 
@@ -292,82 +503,27 @@ if uploaded_file is not None:
     )
 
     st.write(
-        f"**File size:** {uploaded_file.size / 1024:.2f} KB"
+        f"**File size:** "
+        f"{uploaded_file.size / 1024:.2f} KB"
     )
-
-
-    # =====================================================
-    # EXTRACTED TEXT VARIABLE
-    # =====================================================
 
     extracted_text = ""
 
-
-    # =====================================================
-    # PDF PROCESSING
-    # =====================================================
-
+    # PDF
     if uploaded_file.type == "application/pdf":
 
         pdf_bytes = uploaded_file.read()
 
-        pdf_document = fitz.open(
-            stream=pdf_bytes,
-            filetype="pdf"
+        extracted_text = extract_pdf_text(
+            pdf_bytes
         )
 
-
-        # -------------------------------------------------
-        # NORMAL PDF TEXT EXTRACTION
-        # -------------------------------------------------
-
-        for page in pdf_document:
-
-            extracted_text += page.get_text()
-
-
-        pdf_document.close()
-
-
-        # -------------------------------------------------
-        # OCR FOR SCANNED PDF
-        # -------------------------------------------------
-
-        if not extracted_text.strip():
-
-            st.info(
-                "No selectable text found. Running OCR..."
-            )
-
-            pdf_document = fitz.open(
-                stream=pdf_bytes,
-                filetype="pdf"
-            )
-
-            for page in pdf_document:
-
-                pix = page.get_pixmap()
-
-                image = Image.open(
-                    io.BytesIO(
-                        pix.tobytes("png")
-                    )
-                )
-
-                extracted_text += (
-                    pytesseract.image_to_string(image)
-                )
-
-            pdf_document.close()
-
-
-    # =====================================================
-    # IMAGE PROCESSING
-    # =====================================================
-
+    # IMAGE
     else:
 
-        image = Image.open(uploaded_file)
+        image = Image.open(
+            uploaded_file
+        )
 
         st.image(
             image,
@@ -376,128 +532,134 @@ if uploaded_file is not None:
         )
 
         st.info(
-            "Running OCR on image..."
+            "Running improved OCR..."
         )
 
-        extracted_text = pytesseract.image_to_string(
+        extracted_text = run_ocr(
             image
         )
 
+    # ==============================
+    # RESULT
+    # ==============================
 
-    # =====================================================
-    # CLASSIFICATION AND FIELD EXTRACTION
-    # =====================================================
+    if extracted_text:
 
-    if extracted_text.strip():
-
-        document_type = classify_document(
-            extracted_text
-        )
-
-
-        # =================================================
-        # DOCUMENT TYPE
-        # =================================================
-
-        st.write("### Document Type")
-
-
-        # =================================================
-        # INVOICE
-        # =================================================
-
-        if document_type == "Invoice":
-
-            st.success("🧾 Invoice")
-
-
-            invoice_fields = extract_invoice_fields(
-                extracted_text
-            )
-
-
-            st.write("### Extracted Invoice Fields")
-
-
-            if invoice_fields:
-
-                for field, value in invoice_fields.items():
-
-                    st.write(
-                        f"**{field}:** {value}"
-                    )
-
-            else:
-
-                st.warning(
-                    "No invoice fields could be extracted."
-                )
-
-
-        # =================================================
-        # RESUME
-        # =================================================
-
-        elif document_type == "Resume":
-
-            st.success("📄 Resume")
-
-
-            resume_fields = extract_resume_fields(
-                extracted_text
-            )
-
-
-            st.write("### Extracted Resume Fields")
-
-
-            if resume_fields:
-
-                for field, value in resume_fields.items():
-
-                    st.write(
-                        f"**{field}:** {value}"
-                    )
-
-            else:
-
-                st.warning(
-                    "No resume fields could be extracted."
-                )
-
-
-        # =================================================
-        # OTHER
-        # =================================================
-
-        else:
-
-            st.info("❓ Other")
-
-            st.write(
-                "No specific fields are available for this document type."
-            )
-
-
-        # =================================================
-        # FULL EXTRACTED TEXT
-        # =================================================
-
-        st.write("### Extracted Text")
+        st.write("### Cleaned Text")
 
         st.text_area(
             "Document text",
             extracted_text,
-            height=400
+            height=300
         )
 
+        # ML model
+        model, vectorizer = train_ml_model()
 
-    # =====================================================
-    # NO TEXT FOUND
-    # =====================================================
+        document_type = None
+        confidence = None
+
+        if model is not None:
+
+            try:
+
+                X_uploaded = vectorizer.transform(
+                    [extracted_text]
+                )
+
+                document_type = model.predict(
+                    X_uploaded
+                )[0]
+
+                probabilities = model.predict_proba(
+                    X_uploaded
+                )[0]
+
+                confidence = max(
+                    probabilities
+                ) * 100
+
+            except Exception:
+                document_type = None
+
+        # Rule-based fallback
+        if document_type is None:
+
+            document_type = rule_based_classification(
+                extracted_text
+            )
+
+        st.write("### Document Type")
+
+        if document_type == "Invoice":
+            st.success("🧾 Invoice")
+
+        elif document_type == "Resume":
+            st.success("📄 Resume")
+
+        else:
+            st.info("❓ Other")
+
+        # Confidence
+        if confidence is not None:
+
+            st.write(
+                f"**Model Confidence:** "
+                f"{confidence:.2f}%"
+            )
+
+            if confidence < 60:
+                st.warning(
+                    "Low confidence classification. "
+                    "Please verify the result."
+                )
+
+        # ==============================
+        # FIELD EXTRACTION
+        # ==============================
+
+        if document_type == "Invoice":
+
+            fields = extract_invoice_fields(
+                extracted_text
+            )
+
+            st.write(
+                "### Extracted Invoice Fields"
+            )
+
+            for field, value in fields.items():
+
+                st.write(
+                    f"**{field}:** {value}"
+                )
+
+        elif document_type == "Resume":
+
+            fields = extract_resume_fields(
+                extracted_text
+            )
+
+            st.write(
+                "### Extracted Resume Fields"
+            )
+
+            for field, value in fields.items():
+
+                st.write(
+                    f"**{field}:** {value}"
+                )
+
+        else:
+
+            st.info(
+                "No specific fields are available "
+                "for this document type."
+            )
 
     else:
 
         st.warning(
-            "No text could be extracted from this document."
+            "No text could be extracted from "
+            "this document."
         )

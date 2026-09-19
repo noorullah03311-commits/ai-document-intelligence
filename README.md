@@ -1,79 +1,172 @@
-# 📄 AI Document Intelligence
+# AI Document Intelligence
 
-An AI-powered document processing application built with Python and Streamlit.
+## Week 3 - Better Document Understanding
 
-The application can upload PDF and image documents, extract text using PDF text extraction and OCR, classify documents, and extract important information from invoices and resumes.
+An AI-based document processing application that can read PDF and image documents, classify them, and extract important information.
 
----
+## Features
 
-## 🚀 Features
+- PDF document reading
+- OCR for scanned/image documents
+- Image preprocessing
+- Text cleaning and normalization
+- Document classification
+- Invoice field extraction
+- Resume field extraction
+- Missing field handling
+- Machine learning classification
+- Model comparison
+- Confidence display
 
-- Upload PDF, JPG, JPEG, and PNG documents
-- Extract text from normal PDFs using PyMuPDF
-- Extract text from scanned PDFs using Tesseract OCR
-- Extract text from images using Tesseract OCR
-- Classify documents into:
-  - Invoice
-  - Resume
-  - Other
-- Extract important invoice information
-- Extract important resume information
-- Display complete extracted text
-- Simple Streamlit web interface
+## Project Flow
 
----
+Upload Document
+        ↓
+Read Text / OCR
+        ↓
+Clean Text
+        ↓
+Identify Document Type
+        ↓
+Extract Fields
+        ↓
+Check Missing Fields
+        ↓
+Show Result
 
-## 🧾 Invoice Information
+## Dataset
 
-The application can extract:
+The Week 3 dataset contains 15 PDF documents:
+
+- Invoice: 5 documents
+- Resume: 5 documents
+- Other: 5 documents
+
+Dataset structure:
+
+dataset/
+└── week3_dataset/
+    ├── Invoice/
+    ├── Resume/
+    └── Other/
+
+## Text Preprocessing
+
+The application cleans extracted text by:
+
+- Removing extra spaces
+- Removing repeated blank lines
+- Cleaning empty lines
+- Joining words split across lines
+- Normalizing extracted text
+
+## OCR Improvements
+
+For scanned documents and images, the application performs:
+
+- Grayscale conversion
+- Image resizing
+- Contrast enhancement
+- Thresholding
+- Tesseract OCR
+
+## Machine Learning
+
+TF-IDF is used to convert document text into numerical features.
+
+Two models were compared:
+
+1. Logistic Regression
+2. Multinomial Naive Bayes
+
+## Model Evaluation
+
+The models were evaluated using:
+
+- Accuracy
+- Precision
+- Recall
+- F1-score
+- Classification Report
+- Confusion Matrix
+
+### Results
+
+| Model | Accuracy | Precision | Recall | F1-score |
+|---|---:|---:|---:|---:|
+| Logistic Regression | 40% | 45% | 40% | 35% |
+| Naive Bayes | 60% | 47% | 60% | 50% |
+
+The evaluation was performed on a small dataset, so the results are preliminary and may change with a larger dataset.
+
+## Invoice Extraction
+
+The application extracts:
 
 - Invoice Number
 - Date
 - Company Name
-- Payment Due
+- Total Amount
 - Email
 - Phone
-- Total Amount
 
----
+If a required field is missing, the application displays:
 
-## 📄 Resume Information
+`Not Found`
 
-The application can extract:
+## Resume Extraction
+
+The application extracts:
 
 - Name
 - Email
 - Phone
-- Education
-- Experience
 - Skills
 
----
+Missing fields are displayed as:
 
-## 🛠️ Technologies Used
+`Not Found`
+
+## Confidence
+
+The application displays the machine learning classification confidence when available.
+
+Low-confidence predictions are highlighted so the result can be manually verified.
+
+## Testing
+
+The application was tested with:
+
+- Invoice documents
+- Resume documents
+- Other documents
+- Image/scanned documents
+- Documents with missing fields
+
+## Technologies Used
 
 - Python
 - Streamlit
 - PyMuPDF
 - Tesseract OCR
-- Pytesseract
 - Pillow
-- Regular Expressions (Regex)
+- Scikit-learn
+- TF-IDF
+- Logistic Regression
+- Multinomial Naive Bayes
 
----
-
-## 📁 Project Structure
+## Files
 
 ```text
 ai-document-intelligence/
 │
+├── dataset/
+│   ├── Invoice/
+│   ├── Other/
+│   ├── Resume/
+│   └── week3_dataset/
+│
 ├── app.py
-├── requirements.txt
+├── train_model.py
 ├── README.md
-│
-├── samples/
-│   ├── invoice1
-│   ├── invoice2
-│   └── resume1
-│
-└── venv/
+└── requirements.txt
