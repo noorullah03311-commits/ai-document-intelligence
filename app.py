@@ -9,6 +9,8 @@ from PIL import Image, ImageOps
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.naive_bayes import MultinomialNB
 
+from storage_manager import get_storage_path
+
 
 # ==============================
 # PAGE SETTINGS
@@ -31,16 +33,24 @@ st.write("Upload a PDF or image to analyze the document.")
 def clean_text(text):
     text = text.replace("\x00", " ")
 
-    # Fix words split across lines
-    text = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", text)
+    text = re.sub(
+        r"(\w)-\s*\n\s*(\w)",
+        r"\1\2",
+        text
+    )
 
-    # Remove extra spaces
-    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(
+        r"[ \t]+",
+        " ",
+        text
+    )
 
-    # Remove repeated blank lines
-    text = re.sub(r"\n\s*\n+", "\n", text)
+    text = re.sub(
+        r"\n\s*\n+",
+        "\n",
+        text
+    )
 
-    # Clean each line
     lines = []
 
     for line in text.splitlines():
@@ -58,22 +68,19 @@ def clean_text(text):
 
 def preprocess_image(image):
 
-    # Grayscale
     image = image.convert("L")
 
-    # Increase size for better OCR
     width, height = image.size
 
     if width < 1600:
         scale = 1600 / width
+
         image = image.resize(
             (int(width * scale), int(height * scale))
         )
 
-    # Improve contrast
     image = ImageOps.autocontrast(image)
 
-    # Threshold
     image = image.point(
         lambda pixel: 0 if pixel < 180 else 255
     )
@@ -113,7 +120,6 @@ def extract_pdf_text(pdf_bytes):
 
     extracted_text = clean_text(extracted_text)
 
-    # OCR if text is missing or too short
     if len(extracted_text) < 30:
 
         extracted_text = ""
@@ -237,7 +243,9 @@ def train_ml_model():
                 with open(filepath, "rb") as file:
                     pdf_bytes = file.read()
 
-                text = extract_pdf_text(pdf_bytes)
+                text = extract_pdf_text(
+                    pdf_bytes
+                )
 
                 if len(text) > 20:
 
@@ -275,7 +283,6 @@ def extract_invoice_fields(text):
 
     fields = {}
 
-    # Invoice Number
     invoice_number = re.search(
         r"(?:invoice\s*(?:number|no\.?|#)|inv(?:oice)?\s*#?)"
         r"\s*[:\-]?\s*([A-Za-z0-9\-]+)",
@@ -289,7 +296,6 @@ def extract_invoice_fields(text):
         else "Not Found"
     )
 
-    # Date
     date = re.search(
         r"\b(?:date|invoice date)\s*[:\-]?\s*"
         r"(\d{1,4}[-/]\d{1,2}[-/]\d{1,4})",
@@ -303,7 +309,6 @@ def extract_invoice_fields(text):
         else "Not Found"
     )
 
-    # Company Name
     company = re.search(
         r"company\s*name\s*[:\-]?\s*(.+)",
         text,
@@ -314,6 +319,7 @@ def extract_invoice_fields(text):
         fields["Company Name"] = company.group(1).strip()
 
     else:
+
         lines = [
             line.strip()
             for line in text.splitlines()
@@ -337,7 +343,6 @@ def extract_invoice_fields(text):
 
         fields["Company Name"] = company_name
 
-    # Total Amount
     total = re.search(
         r"(?:total\s*amount|grand\s*total|total)"
         r"\s*[:\-]?\s*([^\n]+)",
@@ -351,7 +356,6 @@ def extract_invoice_fields(text):
         else "Not Found"
     )
 
-    # Email
     email = re.search(
         r"[\w\.-]+@[\w\.-]+\.\w+",
         text
@@ -363,7 +367,6 @@ def extract_invoice_fields(text):
         else "Not Found"
     )
 
-    # Phone
     phone = re.search(
         r"\+?\d[\d\s\-]{8,}\d",
         text
@@ -392,7 +395,6 @@ def extract_resume_fields(text):
         if line.strip()
     ]
 
-    # Name
     name = None
 
     for i, line in enumerate(lines):
@@ -417,7 +419,6 @@ def extract_resume_fields(text):
         else "Not Found"
     )
 
-    # Email
     email = re.search(
         r"[\w\.-]+@[\w\.-]+\.\w+",
         text
@@ -429,7 +430,6 @@ def extract_resume_fields(text):
         else "Not Found"
     )
 
-    # Phone
     phone = re.search(
         r"\+?\d[\d\s\-]{8,}\d",
         text
@@ -441,10 +441,9 @@ def extract_resume_fields(text):
         else "Not Found"
     )
 
-    # Skills
     skills = re.search(
-        r"SKILLS\s*(.*?)(?="
-        r"PROJECTS|EXPERIENCE|EDUCATION|$)",
+        r"SKILLS\s*(.*?)"
+        r"(?=PROJECTS|EXPERIENCE|EDUCATION|$)",
         text,
         re.IGNORECASE | re.DOTALL
     )
@@ -459,7 +458,9 @@ def extract_resume_fields(text):
             if line.strip()
         ]
 
-        fields["Skills"] = ", ".join(skill_lines)
+        fields["Skills"] = ", ".join(
+            skill_lines
+        )
 
     else:
         fields["Skills"] = "Not Found"
@@ -509,7 +510,36 @@ if uploaded_file is not None:
 
     extracted_text = ""
 
+    # ==============================
+    # SAVE UPLOADED FILE
+    # ==============================
+
+    document_type = "other"
+
+    if "invoice" in uploaded_file.name.lower():
+        document_type = "invoice"
+
+    elif "resume" in uploaded_file.name.lower():
+        document_type = "resume"
+
+    storage_path = get_storage_path(
+        document_type,
+        uploaded_file.name
+    )
+
+    with open(storage_path, "wb") as file:
+        file.write(
+            uploaded_file.getbuffer()
+        )
+
+    st.success(
+        f"File saved: {storage_path}"
+    )
+
+    # ==============================
     # PDF
+    # ==============================
+
     if uploaded_file.type == "application/pdf":
 
         pdf_bytes = uploaded_file.read()
@@ -518,7 +548,10 @@ if uploaded_file is not None:
             pdf_bytes
         )
 
+    # ==============================
     # IMAGE
+    # ==============================
+
     else:
 
         image = Image.open(
@@ -609,6 +642,7 @@ if uploaded_file is not None:
             )
 
             if confidence < 60:
+
                 st.warning(
                     "Low confidence classification. "
                     "Please verify the result."
