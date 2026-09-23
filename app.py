@@ -1,20 +1,40 @@
 import streamlit as st
-import pymupdf
+import fitz
 import pytesseract
 import re
 import io
 import os
+import hashlib
+from datetime import datetime
 
 from PIL import Image, ImageOps
+
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.naive_bayes import MultinomialNB
 
 from storage_manager import get_storage_path
 
+from database import (
+    create_database,
+    insert_document,
+    document_hash_exists,
+    search_documents,
+    get_filtered_documents,
+    get_all_documents,
+    get_document_by_id
+)
 
-# ==============================
+
+# =========================================================
+# DATABASE
+# =========================================================
+
+create_database()
+
+
+# =========================================================
 # PAGE SETTINGS
-# ==============================
+# =========================================================
 
 st.set_page_config(
     page_title="AI Document Intelligence",
@@ -22,49 +42,48 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📄 AI Document Intelligence")
-st.write("Upload a PDF or image to analyze the document.")
+st.title("📄 AI Document Intelligence & Workflow Platform")
+
+st.write(
+    "Upload, process, store and search your documents."
+)
 
 
-# ==============================
-# TEXT CLEANING
-# ==============================
+# =========================================================
+# TASK 7: PROCESSING STATUS
+# =========================================================
 
-def clean_text(text):
-    text = text.replace("\x00", " ")
+def display_status(status):
 
-    text = re.sub(
-        r"(\w)-\s*\n\s*(\w)",
-        r"\1\2",
-        text
-    )
+    if status == "Processed":
 
-    text = re.sub(
-        r"[ \t]+",
-        " ",
-        text
-    )
+        st.success("✅ Processing Status: Processed")
 
-    text = re.sub(
-        r"\n\s*\n+",
-        "\n",
-        text
-    )
+    elif status == "Needs Review":
 
-    lines = []
+        st.warning("⚠️ Processing Status: Needs Review")
 
-    for line in text.splitlines():
-        line = line.strip()
+    elif status == "Failed":
 
-        if line:
-            lines.append(line)
+        st.error("❌ Processing Status: Failed")
 
-    return "\n".join(lines).strip()
+    else:
+
+        st.info(f"Processing Status: {status}")
 
 
-# ==============================
-# OCR PREPROCESSING
-# ==============================
+# =========================================================
+# SHA-256 HASH
+# =========================================================
+
+def calculate_file_hash(file_bytes):
+
+    return hashlib.sha256(file_bytes).hexdigest()
+
+
+# =========================================================
+# OCR
+# =========================================================
 
 def preprocess_image(image):
 
@@ -73,22 +92,25 @@ def preprocess_image(image):
     width, height = image.size
 
     if width < 1600:
-        scale = 1600 / width
+
+        new_height = int(
+            height * (1600 / width)
+        )
 
         image = image.resize(
-            (int(width * scale), int(height * scale))
+            (1600, new_height)
         )
 
     image = ImageOps.autocontrast(image)
 
     image = image.point(
-        lambda pixel: 0 if pixel < 180 else 255
+        lambda p: 255 if p > 180 else 0
     )
 
     return image
 
 
-def run_ocr(image):
+def perform_ocr(image):
 
     processed_image = preprocess_image(image)
 
@@ -97,43 +119,39 @@ def run_ocr(image):
         config="--psm 6"
     )
 
-    return clean_text(text)
+    return text
 
 
-# ==============================
+# =========================================================
 # PDF TEXT EXTRACTION
-# ==============================
+# =========================================================
 
-def extract_pdf_text(pdf_bytes):
+def extract_pdf_text(file_bytes):
 
-    extracted_text = ""
-
-    document = pymupdf.open(
-        stream=pdf_bytes,
+    pdf_document = fitz.open(
+        stream=file_bytes,
         filetype="pdf"
     )
 
-    for page in document:
-        extracted_text += page.get_text() + "\n"
+    text = ""
 
-    document.close()
+    for page in pdf_document:
 
-    extracted_text = clean_text(extracted_text)
+        page_text = page.get_text()
 
-    if len(extracted_text) < 30:
+        if page_text:
 
-        extracted_text = ""
+            text += page_text + "\n"
 
-        document = pymupdf.open(
-            stream=pdf_bytes,
-            filetype="pdf"
-        )
+    # OCR fallback for scanned PDFs
+    if len(text.strip()) < 30:
 
-        for page in document:
+        text = ""
+
+        for page in pdf_document:
 
             pix = page.get_pixmap(
-                matrix=pymupdf.Matrix(2, 2),
-                alpha=False
+                matrix=fitz.Matrix(2, 2)
             )
 
             image = Image.open(
@@ -142,67 +160,33 @@ def extract_pdf_text(pdf_bytes):
                 )
             )
 
-            extracted_text += run_ocr(image) + "\n"
+            text += perform_ocr(image) + "\n"
 
-        document.close()
+    pdf_document.close()
 
-        extracted_text = clean_text(extracted_text)
-
-    return extracted_text
+    return text
 
 
-# ==============================
-# RULE-BASED CLASSIFICATION
-# ==============================
+# =========================================================
+# CLEAN TEXT
+# =========================================================
 
-def rule_based_classification(text):
+def clean_text(text):
 
-    text_lower = text.lower()
-
-    invoice_keywords = [
-        "invoice",
-        "invoice number",
-        "bill to",
-        "total amount",
-        "subtotal",
-        "tax",
-        "grand total"
-    ]
-
-    resume_keywords = [
-        "resume",
-        "curriculum vitae",
-        "education",
-        "experience",
-        "skills",
-        "projects"
-    ]
-
-    invoice_score = sum(
-        keyword in text_lower
-        for keyword in invoice_keywords
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
     )
 
-    resume_score = sum(
-        keyword in text_lower
-        for keyword in resume_keywords
-    )
-
-    if invoice_score > resume_score and invoice_score >= 2:
-        return "Invoice"
-
-    elif resume_score > invoice_score and resume_score >= 2:
-        return "Resume"
-
-    return "Other"
+    return text.strip()
 
 
-# ==============================
-# TRAIN ML MODEL
-# ==============================
+# =========================================================
+# DOCUMENT CLASSIFICATION
+# =========================================================
 
-@st.cache_resource
-def train_ml_model():
+def classify_document(text):
 
     dataset_path = "dataset/week3_dataset"
 
@@ -212,268 +196,555 @@ def train_ml_model():
         "Resume"
     ]
 
-    texts = []
-    labels = []
+    training_texts = []
+    training_labels = []
 
-    if not os.path.exists(dataset_path):
-        return None, None
+    if os.path.exists(dataset_path):
 
-    for category in categories:
+        for category in categories:
 
-        folder = os.path.join(
-            dataset_path,
-            category
-        )
-
-        if not os.path.exists(folder):
-            continue
-
-        for filename in os.listdir(folder):
-
-            if not filename.lower().endswith(".pdf"):
-                continue
-
-            filepath = os.path.join(
-                folder,
-                filename
+            category_path = os.path.join(
+                dataset_path,
+                category
             )
 
-            try:
+            if not os.path.exists(category_path):
 
-                with open(filepath, "rb") as file:
-                    pdf_bytes = file.read()
+                continue
 
-                text = extract_pdf_text(
-                    pdf_bytes
+            for filename in os.listdir(
+                category_path
+            ):
+
+                file_path = os.path.join(
+                    category_path,
+                    filename
                 )
 
-                if len(text) > 20:
+                if filename.lower().endswith(".txt"):
 
-                    texts.append(text)
-                    labels.append(category)
+                    try:
 
-            except Exception:
-                pass
+                        with open(
+                            file_path,
+                            "r",
+                            encoding="utf-8"
+                        ) as file:
 
-    if len(texts) < 6:
-        return None, None
+                            training_texts.append(
+                                file.read()
+                            )
 
-    vectorizer = TfidfVectorizer(
-        max_features=3000,
-        ngram_range=(1, 2)
+                            training_labels.append(
+                                category
+                            )
+
+                    except Exception:
+
+                        pass
+
+    if len(training_texts) < 2:
+
+        return "Other"
+
+    vectorizer = TfidfVectorizer()
+
+    X = vectorizer.fit_transform(
+        training_texts
     )
-
-    X = vectorizer.fit_transform(texts)
 
     model = MultinomialNB()
 
     model.fit(
         X,
-        labels
+        training_labels
     )
 
-    return model, vectorizer
+    document_vector = vectorizer.transform(
+        [text]
+    )
+
+    prediction = model.predict(
+        document_vector
+    )[0]
+
+    return prediction
 
 
-# ==============================
+# =========================================================
 # INVOICE EXTRACTION
-# ==============================
+# =========================================================
 
 def extract_invoice_fields(text):
 
-    fields = {}
+    invoice_number = "Not Found"
+    date = "Not Found"
+    company = "Not Found"
+    total_amount = "Not Found"
+    email = "Not Found"
+    phone = "Not Found"
 
-    invoice_number = re.search(
-        r"(?:invoice\s*(?:number|no\.?|#)|inv(?:oice)?\s*#?)"
-        r"\s*[:\-]?\s*([A-Za-z0-9\-]+)",
+    match = re.search(
+        r"(?:invoice\s*(?:number|no|#)?)[\s:.-]*([A-Z0-9-]+)",
         text,
         re.IGNORECASE
     )
 
-    fields["Invoice Number"] = (
-        invoice_number.group(1).strip()
-        if invoice_number
-        else "Not Found"
+    if match:
+
+        invoice_number = match.group(1)
+
+    match = re.search(
+        r"\b(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b",
+        text
     )
 
-    date = re.search(
-        r"\b(?:date|invoice date)\s*[:\-]?\s*"
-        r"(\d{1,4}[-/]\d{1,2}[-/]\d{1,4})",
+    if match:
+
+        date = match.group(1)
+
+    match = re.search(
+        r"(?:company\s*name|company)[\s:.-]*(.+?)(?:payment|date|invoice|email|phone|total)",
         text,
         re.IGNORECASE
     )
 
-    fields["Date"] = (
-        date.group(1).strip()
-        if date
-        else "Not Found"
-    )
+    if match:
 
-    company = re.search(
-        r"company\s*name\s*[:\-]?\s*(.+)",
+        company = match.group(1).strip()
+
+    match = re.search(
+        r"(?:total\s*(?:amount)?)[\s:.-]*([A-Z]{2,4})?\s*([\d,]+(?:\.\d+)?)",
         text,
         re.IGNORECASE
     )
 
-    if company:
-        fields["Company Name"] = company.group(1).strip()
+    if match:
 
-    else:
+        currency = match.group(1) or ""
 
-        lines = [
-            line.strip()
-            for line in text.splitlines()
-            if line.strip()
-        ]
+        amount = match.group(2)
 
-        company_name = "Not Found"
+        total_amount = f"{currency} {amount}".strip()
 
-        for line in lines[:5]:
-
-            lower_line = line.lower()
-
-            if (
-                "invoice" not in lower_line
-                and "date" not in lower_line
-                and "email" not in lower_line
-                and "phone" not in lower_line
-            ):
-                company_name = line
-                break
-
-        fields["Company Name"] = company_name
-
-    total = re.search(
-        r"(?:total\s*amount|grand\s*total|total)"
-        r"\s*[:\-]?\s*([^\n]+)",
-        text,
-        re.IGNORECASE
-    )
-
-    fields["Total Amount"] = (
-        total.group(1).strip()
-        if total
-        else "Not Found"
-    )
-
-    email = re.search(
+    match = re.search(
         r"[\w\.-]+@[\w\.-]+\.\w+",
         text
     )
 
-    fields["Email"] = (
-        email.group(0).strip()
-        if email
-        else "Not Found"
-    )
+    if match:
 
-    phone = re.search(
-        r"\+?\d[\d\s\-]{8,}\d",
+        email = match.group(0)
+
+    match = re.search(
+        r"(?:\+?\d[\d\s()-]{7,}\d)",
         text
     )
 
-    fields["Phone"] = (
-        phone.group(0).strip()
-        if phone
-        else "Not Found"
-    )
+    if match:
 
-    return fields
+        phone = match.group(0).strip()
+
+    return {
+        "Invoice Number": invoice_number,
+        "Date": date,
+        "Company": company,
+        "Total Amount": total_amount,
+        "Email": email,
+        "Phone": phone
+    }
 
 
-# ==============================
+# =========================================================
 # RESUME EXTRACTION
-# ==============================
+# =========================================================
 
 def extract_resume_fields(text):
 
-    fields = {}
+    name = "Not Found"
+    email = "Not Found"
+    phone = "Not Found"
+    skills = "Not Found"
 
     lines = [
         line.strip()
-        for line in text.splitlines()
+        for line in text.split("\n")
         if line.strip()
     ]
 
-    name = None
+    if lines:
 
-    for i, line in enumerate(lines):
-
-        if line.upper() in [
-            "RESUME",
-            "CURRICULUM VITAE",
-            "CV"
-        ]:
-
-            if i + 1 < len(lines):
-                name = lines[i + 1]
-
-            break
-
-    if not name and lines:
         name = lines[0]
 
-    fields["Name"] = (
-        name
-        if name
-        else "Not Found"
-    )
-
-    email = re.search(
+    match = re.search(
         r"[\w\.-]+@[\w\.-]+\.\w+",
         text
     )
 
-    fields["Email"] = (
-        email.group(0).strip()
-        if email
-        else "Not Found"
-    )
+    if match:
 
-    phone = re.search(
-        r"\+?\d[\d\s\-]{8,}\d",
+        email = match.group(0)
+
+    match = re.search(
+        r"(?:\+?\d[\d\s()-]{7,}\d)",
         text
     )
 
-    fields["Phone"] = (
-        phone.group(0).strip()
-        if phone
-        else "Not Found"
-    )
+    if match:
 
-    skills = re.search(
-        r"SKILLS\s*(.*?)"
-        r"(?=PROJECTS|EXPERIENCE|EDUCATION|$)",
+        phone = match.group(0).strip()
+
+    match = re.search(
+        r"skills?[\s:.-]*(.*?)(?:experience|education|projects|$)",
         text,
-        re.IGNORECASE | re.DOTALL
+        re.IGNORECASE
     )
 
-    if skills:
+    if match:
 
-        skills_text = skills.group(1).strip()
+        skills = match.group(1).strip()
 
-        skill_lines = [
-            line.strip()
-            for line in skills_text.splitlines()
-            if line.strip()
-        ]
+    return {
+        "Name": name,
+        "Email": email,
+        "Phone": phone,
+        "Skills": skills
+    }
 
-        fields["Skills"] = ", ".join(
-            skill_lines
+
+# =========================================================
+# SEARCH
+# =========================================================
+
+st.header("🔎 Search Documents")
+
+search_text = st.text_input(
+    "Search by filename, company, invoice number, document type or text"
+)
+
+if search_text:
+
+    results = search_documents(
+        search_text
+    )
+
+    if results:
+
+        st.success(
+            f"{len(results)} document(s) found."
         )
 
+        for document in results:
+
+            st.write("---")
+
+            st.write(
+                f"**ID:** {document[0]}"
+            )
+
+            st.write(
+                f"**Filename:** {document[1]}"
+            )
+
+            st.write(
+                f"**Type:** {document[3]}"
+            )
+
+            st.write(
+                f"**Company:** {document[5] or 'Not Available'}"
+            )
+
+            st.write(
+                f"**Invoice Number:** {document[6] or 'Not Available'}"
+            )
+
+            st.write(
+                f"**Upload Date:** {document[4]}"
+            )
+
+            st.write(
+                f"**Status:** {document[11]}"
+            )
+
+            st.write(
+                f"**Preview:** {document[9]}"
+            )
+
     else:
-        fields["Skills"] = "Not Found"
 
-    return fields
+        st.warning(
+            "No matching documents found."
+        )
 
 
-# ==============================
-# UPLOAD
-# ==============================
+# =========================================================
+# FILTERS AND SORTING
+# =========================================================
+
+st.header("📂 Filters & Sorting")
+
+if st.button("🧹 Clear Filters"):
+
+    st.session_state["type_filter"] = "All"
+    st.session_state["status_filter"] = "All"
+    st.session_state["date_filter"] = None
+    st.session_state["sort_filter"] = "Newest"
+
+    st.rerun()
+
+
+col1, col2 = st.columns(2)
+
+
+with col1:
+
+    document_type_filter = st.selectbox(
+        "Filter by Document Type",
+        ["All", "Invoice", "Resume", "Other"],
+        key="type_filter"
+    )
+
+
+with col2:
+
+    status_filter = st.selectbox(
+        "Filter by Processing Status",
+        ["All", "Processed", "Needs Review", "Failed"],
+        key="status_filter"
+    )
+
+
+upload_date_filter = st.date_input(
+    "Filter by Upload Date (optional)",
+    value=None,
+    key="date_filter"
+)
+
+
+sort_filter = st.selectbox(
+    "Sort Documents",
+    ["Newest", "Oldest"],
+    key="sort_filter"
+)
+
+
+filtered_documents = get_filtered_documents(
+    document_type=document_type_filter,
+    status=status_filter,
+    upload_date=upload_date_filter,
+    sort_order=sort_filter
+)
+
+
+st.subheader("📑 Filtered Documents")
+
+
+if filtered_documents:
+
+    st.success(
+        f"{len(filtered_documents)} document(s) found."
+    )
+
+    for document in filtered_documents:
+
+        st.write("---")
+
+        st.write(
+            f"**ID:** {document[0]}"
+        )
+
+        st.write(
+            f"**Original Filename:** {document[1]}"
+        )
+
+        st.write(
+            f"**Stored Filename:** {document[2]}"
+        )
+
+        st.write(
+            f"**Document Type:** {document[3]}"
+        )
+
+        st.write(
+            f"**Upload Date:** {document[4]}"
+        )
+
+        st.write(
+            f"**Company:** {document[5] or 'Not Available'}"
+        )
+
+        st.write(
+            f"**Invoice Number:** {document[6] or 'Not Available'}"
+        )
+
+        st.write(
+            f"**Total Amount:** {document[7] or 'Not Available'}"
+        )
+
+        st.write(
+            f"**File Location:** {document[8]}"
+        )
+
+        display_status(
+            document[11]
+        )
+
+else:
+
+    st.info(
+        "No documents match these filters."
+    )
+
+
+# =========================================================
+# DOCUMENT DETAIL VIEW
+# =========================================================
+
+st.header("📋 Document Detail View")
+
+all_documents = get_all_documents()
+
+
+if all_documents:
+
+    document_options = {
+        f"{document[0]} - {document[1]}": document[0]
+        for document in all_documents
+    }
+
+    selected_document_label = st.selectbox(
+        "Select a document to view details",
+        list(document_options.keys())
+    )
+
+    selected_document_id = document_options[
+        selected_document_label
+    ]
+
+    selected_document = get_document_by_id(
+        selected_document_id
+    )
+
+    if selected_document:
+
+        st.subheader("📄 Document Information")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            st.write(
+                f"**Document ID:** {selected_document[0]}"
+            )
+
+            st.write(
+                f"**Original Filename:** {selected_document[1]}"
+            )
+
+            st.write(
+                f"**Stored Filename:** {selected_document[2]}"
+            )
+
+            st.write(
+                f"**Document Type:** {selected_document[3]}"
+            )
+
+            st.write(
+                f"**Upload Date:** {selected_document[4]}"
+            )
+
+        with col2:
+
+            st.write(
+                f"**Company:** {selected_document[5] or 'Not Available'}"
+            )
+
+            st.write(
+                f"**Invoice Number:** {selected_document[6] or 'Not Available'}"
+            )
+
+            st.write(
+                f"**Total Amount:** {selected_document[7] or 'Not Available'}"
+            )
+
+            display_status(
+                selected_document[11]
+            )
+
+            st.write(
+                f"**File Location:** {selected_document[8]}"
+            )
+
+        st.subheader("📝 Text Preview")
+
+        if selected_document[9]:
+
+            st.text_area(
+                "Stored Text Preview",
+                selected_document[9],
+                height=200,
+                disabled=True
+            )
+
+        else:
+
+            st.info(
+                "No text preview is available."
+            )
+
+        st.subheader("📂 File")
+
+        file_path = selected_document[8]
+
+        if os.path.exists(file_path):
+
+            try:
+
+                with open(
+                    file_path,
+                    "rb"
+                ) as file:
+
+                    file_data = file.read()
+
+                st.success(
+                    "Saved file is available."
+                )
+
+                st.download_button(
+                    label="⬇️ Download Document",
+                    data=file_data,
+                    file_name=selected_document[1],
+                    mime="application/octet-stream"
+                )
+
+            except Exception:
+
+                st.error(
+                    "The saved document could not be opened."
+                )
+
+        else:
+
+            st.warning(
+                "The saved file could not be found at the stored location."
+            )
+
+else:
+
+    st.info(
+        "No documents are available. Upload a document first."
+    )
+
+
+# =========================================================
+# UPLOAD NEW DOCUMENT
+# =========================================================
+
+st.header("📤 Upload New Document")
 
 uploaded_file = st.file_uploader(
-    "Choose a document",
+    "Upload a document",
     type=[
         "pdf",
         "jpg",
@@ -483,217 +754,387 @@ uploaded_file = st.file_uploader(
 )
 
 
-# ==============================
-# PROCESS DOCUMENT
-# ==============================
+# =========================================================
+# PROCESS FILE
+# =========================================================
 
 if uploaded_file is not None:
 
     st.success(
-        f"File uploaded: {uploaded_file.name}"
+        f"Uploaded: {uploaded_file.name}"
     )
 
-    st.write("### File Information")
+    file_bytes = uploaded_file.getvalue()
 
-    st.write(
-        f"**Filename:** {uploaded_file.name}"
+    # =====================================================
+    # SHA-256 HASH
+    # =====================================================
+
+    file_hash = calculate_file_hash(
+        file_bytes
     )
 
-    st.write(
-        f"**File type:** {uploaded_file.type}"
+    # =====================================================
+    # DUPLICATE CHECK
+    # =====================================================
+
+    existing_document = document_hash_exists(
+        file_hash
     )
 
-    st.write(
-        f"**File size:** "
-        f"{uploaded_file.size / 1024:.2f} KB"
-    )
+    if existing_document:
 
-    extracted_text = ""
-
-    # ==============================
-    # SAVE UPLOADED FILE
-    # ==============================
-
-    document_type = "other"
-
-    if "invoice" in uploaded_file.name.lower():
-        document_type = "invoice"
-
-    elif "resume" in uploaded_file.name.lower():
-        document_type = "resume"
-
-    storage_path = get_storage_path(
-        document_type,
-        uploaded_file.name
-    )
-
-    with open(storage_path, "wb") as file:
-        file.write(
-            uploaded_file.getbuffer()
+        st.warning(
+            "⚠️ Duplicate document detected!"
         )
 
-    st.success(
-        f"File saved: {storage_path}"
-    )
-
-    # ==============================
-    # PDF
-    # ==============================
-
-    if uploaded_file.type == "application/pdf":
-
-        pdf_bytes = uploaded_file.read()
-
-        extracted_text = extract_pdf_text(
-            pdf_bytes
+        st.write(
+            f"**Original filename:** {existing_document[1]}"
         )
 
-    # ==============================
-    # IMAGE
-    # ==============================
-
-    else:
-
-        image = Image.open(
-            uploaded_file
+        st.write(
+            f"**Document type:** {existing_document[3]}"
         )
 
-        st.image(
-            image,
-            caption="Uploaded document",
-            use_container_width=True
+        st.write(
+            f"**Upload date:** {existing_document[4]}"
+        )
+
+        display_status(
+            existing_document[11]
+        )
+
+        st.write(
+            f"**File location:** {existing_document[8]}"
         )
 
         st.info(
-            "Running improved OCR..."
+            "This file already exists. A new copy was not created."
         )
 
-        extracted_text = run_ocr(
-            image
+        st.stop()
+
+    # =====================================================
+    # VARIABLES
+    # =====================================================
+
+    extracted_text = ""
+
+    company = ""
+    invoice_number = ""
+    total_amount = ""
+
+    predicted_type = "Other"
+
+    status = "Processed"
+
+    # =====================================================
+    # STORAGE FOLDER
+    # =====================================================
+
+    storage_type = "other"
+
+    if "invoice" in uploaded_file.name.lower():
+
+        storage_type = "invoice"
+
+    elif "resume" in uploaded_file.name.lower():
+
+        storage_type = "resume"
+
+    # =====================================================
+    # SAVE FILE
+    # =====================================================
+
+    try:
+
+        storage_path = get_storage_path(
+            storage_type,
+            uploaded_file.name
         )
 
-    # ==============================
-    # RESULT
-    # ==============================
+        with open(
+            storage_path,
+            "wb"
+        ) as file:
+
+            file.write(file_bytes)
+
+        st.success(
+            f"File saved: {storage_path}"
+        )
+
+    except Exception:
+
+        st.error(
+            "The file could not be saved."
+        )
+
+        st.stop()
+
+    # =====================================================
+    # EXTRACT TEXT
+    # =====================================================
+
+    try:
+
+        if uploaded_file.name.lower().endswith(
+            ".pdf"
+        ):
+
+            extracted_text = extract_pdf_text(
+                file_bytes
+            )
+
+        else:
+
+            image = Image.open(
+                io.BytesIO(file_bytes)
+            )
+
+            extracted_text = perform_ocr(
+                image
+            )
+
+        extracted_text = clean_text(
+            extracted_text
+        )
+
+        if not extracted_text:
+
+            status = "Failed"
+
+            st.error(
+                "❌ No readable text could be extracted."
+            )
+
+        else:
+
+            st.success(
+                "Text extraction completed successfully."
+            )
+
+    except Exception:
+
+        status = "Failed"
+
+        st.error(
+            "❌ The document could not be processed."
+        )
+
+    # =====================================================
+    # CLASSIFICATION
+    # =====================================================
+
+    if extracted_text and status != "Failed":
+
+        try:
+
+            predicted_type = classify_document(
+                extracted_text
+            )
+
+            st.subheader(
+                "📂 Document Classification"
+            )
+
+            st.write(
+                f"Document Type: **{predicted_type}**"
+            )
+
+        except Exception:
+
+            predicted_type = "Other"
+
+            status = "Needs Review"
+
+            st.warning(
+                "⚠️ Classification could not be completed. Document needs review."
+            )
+
+    # =====================================================
+    # EXTRACTED TEXT
+    # =====================================================
 
     if extracted_text:
 
-        st.write("### Cleaned Text")
-
-        st.text_area(
-            "Document text",
-            extracted_text,
-            height=300
+        st.subheader(
+            "📝 Extracted Text"
         )
 
-        # ML model
-        model, vectorizer = train_ml_model()
+        st.text_area(
+            "OCR / Document Text",
+            extracted_text,
+            height=250
+        )
 
-        document_type = None
-        confidence = None
+    # =====================================================
+    # INVOICE PROCESSING
+    # =====================================================
 
-        if model is not None:
+    if (
+        extracted_text
+        and predicted_type == "Invoice"
+        and status != "Failed"
+    ):
 
-            try:
+        fields = extract_invoice_fields(
+            extracted_text
+        )
 
-                X_uploaded = vectorizer.transform(
-                    [extracted_text]
-                )
+        st.subheader(
+            "🧾 Invoice Information"
+        )
 
-                document_type = model.predict(
-                    X_uploaded
-                )[0]
-
-                probabilities = model.predict_proba(
-                    X_uploaded
-                )[0]
-
-                confidence = max(
-                    probabilities
-                ) * 100
-
-            except Exception:
-                document_type = None
-
-        # Rule-based fallback
-        if document_type is None:
-
-            document_type = rule_based_classification(
-                extracted_text
+        for key, value in fields.items():
+            st.write(
+                f"**{key}:** {value}"
             )
 
-        st.write("### Document Type")
+        company = fields["Company"]
 
-        if document_type == "Invoice":
-            st.success("🧾 Invoice")
+        invoice_number = fields["Invoice Number"]
 
-        elif document_type == "Resume":
-            st.success("📄 Resume")
+        total_amount = fields["Total Amount"]
 
-        else:
-            st.info("❓ Other")
+        # Task 7:
+        # Missing important invoice information
+        # means the document needs manual review.
 
-        # Confidence
-        if confidence is not None:
+        if (
+            company == "Not Found"
+            or invoice_number == "Not Found"
+            or total_amount == "Not Found"
+        ):
+
+            status = "Needs Review"
+
+            st.warning(
+                "⚠️ Important invoice information is missing. "
+                "This document needs review."
+            )
+
+    # =====================================================
+    # RESUME PROCESSING
+    # =====================================================
+
+    elif (
+        extracted_text
+        and predicted_type == "Resume"
+        and status != "Failed"
+    ):
+
+        fields = extract_resume_fields(
+            extracted_text
+        )
+
+        st.subheader(
+            "👤 Resume Information"
+        )
+
+        for key, value in fields.items():
 
             st.write(
-                f"**Model Confidence:** "
-                f"{confidence:.2f}%"
+                f"**{key}:** {value}"
             )
 
-            if confidence < 60:
+        # Task 7:
+        # Missing important resume fields
+        # means the document needs review.
 
-                st.warning(
-                    "Low confidence classification. "
-                    "Please verify the result."
-                )
+        if (
+            fields["Name"] == "Not Found"
+            or fields["Email"] == "Not Found"
+            or fields["Phone"] == "Not Found"
+        ):
 
-        # ==============================
-        # FIELD EXTRACTION
-        # ==============================
+            status = "Needs Review"
 
-        if document_type == "Invoice":
-
-            fields = extract_invoice_fields(
-                extracted_text
+            st.warning(
+                "⚠️ Important resume information is missing. "
+                "This document needs review."
             )
 
-            st.write(
-                "### Extracted Invoice Fields"
+    # =====================================================
+    # OTHER DOCUMENT
+    # =====================================================
+
+    elif (
+        extracted_text
+        and predicted_type == "Other"
+        and status != "Failed"
+    ):
+
+        st.info(
+            "This document is classified as Other."
+        )
+
+    # =====================================================
+    # FINAL PROCESSING STATUS
+    # =====================================================
+
+    st.subheader(
+        "📊 Processing Result"
+    )
+
+    display_status(
+        status
+    )
+
+    # =====================================================
+    # SAVE METADATA
+    # =====================================================
+
+    try:
+
+        upload_date = datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+        stored_filename = storage_path.name
+
+        text_preview = extracted_text[:500]
+
+        insert_document(
+            original_filename=uploaded_file.name,
+            stored_filename=stored_filename,
+            document_type=predicted_type,
+            upload_date=upload_date,
+            company=company,
+            invoice_number=invoice_number,
+            total_amount=total_amount,
+            file_path=str(storage_path),
+            text_preview=text_preview,
+            file_hash=file_hash,
+            status=status
+        )
+
+        st.success(
+            "✅ Document metadata saved to SQLite database."
+        )
+
+        if status == "Processed":
+
+            st.success(
+                "Document processing completed successfully."
             )
 
-            for field, value in fields.items():
+        elif status == "Needs Review":
 
-                st.write(
-                    f"**{field}:** {value}"
-                )
-
-        elif document_type == "Resume":
-
-            fields = extract_resume_fields(
-                extracted_text
+            st.warning(
+                "Document was processed, but some information "
+                "needs manual review."
             )
 
-            st.write(
-                "### Extracted Resume Fields"
+        elif status == "Failed":
+
+            st.error(
+                "Document processing failed. "
+                "The failure status has been saved."
             )
 
-            for field, value in fields.items():
+    except Exception:
 
-                st.write(
-                    f"**{field}:** {value}"
-                )
-
-        else:
-
-            st.info(
-                "No specific fields are available "
-                "for this document type."
-            )
-
-    else:
-
-        st.warning(
-            "No text could be extracted from "
-            "this document."
+        st.error(
+            "The document was processed, but its metadata could not be saved."
         )

@@ -1,172 +1,157 @@
-# AI Document Intelligence
+AI Document Intelligence & Workflow Platform
 
-## Week 3 - Better Document Understanding
+ZYROO AI/ML Internship Program — Week 4
 
-An AI-based document processing application that can read PDF and image documents, classify them, and extract important information.
+An AI-powered document management system built with Python and Streamlit. The platform extracts text from documents, classifies them, extracts important fields, stores files and metadata, detects duplicates, and supports document search and filtering.
 
-## Features
+Features
 
-- PDF document reading
-- OCR for scanned/image documents
-- Image preprocessing
-- Text cleaning and normalization
-- Document classification
-- Invoice field extraction
-- Resume field extraction
-- Missing field handling
-- Machine learning classification
-- Model comparison
-- Confidence display
+- Upload PDF, JPG, JPEG, and PNG documents.
+- Extract text from PDFs and scanned documents using OCR.
+- Clean extracted text.
+- Classify documents as Invoice, Resume, or Other.
+- Extract important invoice and resume information.
+- Store documents in organized folders.
+- Generate safe filenames for stored documents.
+- Store document metadata in an SQLite database.
+- Detect duplicate files using SHA-256 hashing.
+- Search documents by filename, company, invoice number, type, or text.
+- Filter documents by type, processing status, and upload date.
+- Sort documents by newest or oldest.
+- View document details and download saved files.
+- Track processing status: Processed, Needs Review, or Failed.
+- Validate uploads and display user-friendly error messages.
 
-## Project Flow
-
-Upload Document
-        ↓
-Read Text / OCR
-        ↓
-Clean Text
-        ↓
-Identify Document Type
-        ↓
-Extract Fields
-        ↓
-Check Missing Fields
-        ↓
-Show Result
-
-## Dataset
-
-The Week 3 dataset contains 15 PDF documents:
-
-- Invoice: 5 documents
-- Resume: 5 documents
-- Other: 5 documents
-
-Dataset structure:
-
-dataset/
-└── week3_dataset/
-    ├── Invoice/
-    ├── Resume/
-    └── Other/
-
-## Text Preprocessing
-
-The application cleans extracted text by:
-
-- Removing extra spaces
-- Removing repeated blank lines
-- Cleaning empty lines
-- Joining words split across lines
-- Normalizing extracted text
-
-## OCR Improvements
-
-For scanned documents and images, the application performs:
-
-- Grayscale conversion
-- Image resizing
-- Contrast enhancement
-- Thresholding
-- Tesseract OCR
-
-## Machine Learning
-
-TF-IDF is used to convert document text into numerical features.
-
-Two models were compared:
-
-1. Logistic Regression
-2. Multinomial Naive Bayes
-
-## Model Evaluation
-
-The models were evaluated using:
-
-- Accuracy
-- Precision
-- Recall
-- F1-score
-- Classification Report
-- Confusion Matrix
-
-### Results
-
-| Model | Accuracy | Precision | Recall | F1-score |
-|---|---:|---:|---:|---:|
-| Logistic Regression | 40% | 45% | 40% | 35% |
-| Naive Bayes | 60% | 47% | 60% | 50% |
-
-The evaluation was performed on a small dataset, so the results are preliminary and may change with a larger dataset.
-
-## Invoice Extraction
-
-The application extracts:
-
-- Invoice Number
-- Date
-- Company Name
-- Total Amount
-- Email
-- Phone
-
-If a required field is missing, the application displays:
-
-`Not Found`
-
-## Resume Extraction
-
-The application extracts:
-
-- Name
-- Email
-- Phone
-- Skills
-
-Missing fields are displayed as:
-
-`Not Found`
-
-## Confidence
-
-The application displays the machine learning classification confidence when available.
-
-Low-confidence predictions are highlighted so the result can be manually verified.
-
-## Testing
-
-The application was tested with:
-
-- Invoice documents
-- Resume documents
-- Other documents
-- Image/scanned documents
-- Documents with missing fields
-
-## Technologies Used
+Technologies Used
 
 - Python
 - Streamlit
+- SQLite
 - PyMuPDF
-- Tesseract OCR
+- Pytesseract
 - Pillow
 - Scikit-learn
-- TF-IDF
-- Logistic Regression
-- Multinomial Naive Bayes
+- Hashlib
 
-## Files
+Project Structure
 
-```text
 ai-document-intelligence/
 │
-├── dataset/
-│   ├── Invoice/
-│   ├── Other/
-│   ├── Resume/
-│   └── week3_dataset/
-│
 ├── app.py
+├── database.py
+├── storage_manager.py
+├── test_repository.py
 ├── train_model.py
+├── requirements.txt
 ├── README.md
-└── requirements.txt
+├── documents.db
+│
+├── storage/
+│   ├── invoices/
+│   ├── resumes/
+│   └── other/
+│
+└── dataset/
+    └── week3_dataset/
+
+Note: The database, storage folders, and dataset may be created or populated as the application is used. The exact project structure may vary.
+
+Installation
+
+1. Install Python
+
+Install Python 3 from:
+
+https://www.python.org/downloads/
+
+During installation on Windows, enable Add Python to PATH.
+
+2. Install dependencies
+
+Open the terminal in the project folder and run:
+
+pip install -r requirements.txt
+
+3. Install Tesseract OCR
+
+Tesseract OCR is required for scanned documents and images.
+
+Install Tesseract OCR for your operating system. Make sure it is configured correctly so Pytesseract can access it.
+
+4. Run the application
+
+streamlit run app.py
+
+The application will open in your browser.
+
+How to Use
+
+1. Run the Streamlit application.
+2. Upload a supported document.
+3. The system validates and hashes the file.
+4. Duplicate files are detected before saving.
+5. Text is extracted and cleaned.
+6. The document is classified.
+7. Important fields are extracted where applicable.
+8. The file is saved in structured storage.
+9. Metadata and processing status are saved in SQLite.
+10. Use search, filters, sorting, and Document Detail View to manage saved documents.
+
+Database
+
+The project uses SQLite with a "documents" table.
+
+Stored metadata includes:
+
+- Document ID
+- Original filename
+- Stored filename
+- Document type
+- Upload date
+- Company
+- Invoice number
+- Total amount
+- File path
+- Text preview
+- SHA-256 file hash
+- Processing status
+
+Processing Status
+
+Status| Meaning
+Processed| Document processing completed successfully
+Needs Review| Important information is missing or requires manual review
+Failed| Document processing could not be completed
+
+Duplicate Detection
+
+The system generates a SHA-256 hash from the uploaded file's bytes. If the hash already exists in the database, the application identifies the duplicate and avoids saving another copy.
+
+Supported File Types
+
+- PDF
+- JPG
+- JPEG
+- PNG
+
+Maximum upload size: 10 MB.
+
+Run Repository Tests
+
+To run the repository test suite:
+
+python test_repository.py
+
+The test script checks database creation, sample document insertion, document types, duplicate hash lookup, search, filtering, sorting, document lookup, and persistence after reconnecting.
+
+The test uses a temporary database and does not intentionally modify the main project database.
+
+Project Status
+
+Week 4 focuses on building a document management layer on top of the document processing pipeline, including structured storage, SQLite metadata, duplicate detection, search, filtering, document details, processing status, safer error handling, and repository testing.
+
+Author
+
+Mehboob Alam
+
+ZYROO AI/ML Internship Program
